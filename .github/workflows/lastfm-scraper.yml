@@ -25,7 +25,7 @@ jobs:
     - name: Install system dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y wget gnupg
+        sudo apt-get install -y wget gnupg unzip
         
         # Install Chrome
         wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
@@ -33,12 +33,22 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y google-chrome-stable
         
-        # Install ChromeDriver
-        CHROME_VERSION=$(google-chrome --version | cut -d " " -f3 | cut -d "." -f1)
-        CHROMEDRIVER_VERSION=$(curl -s "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${CHROME_VERSION}")
-        wget -O /tmp/chromedriver.zip "https://chromedriver.storage.googleapis.com/${CHROMEDRIVER_VERSION}/chromedriver_linux64.zip"
-        sudo unzip /tmp/chromedriver.zip -d /usr/local/bin/
+        # Install ChromeDriver using Chrome for Testing API
+        CHROME_VERSION=$(google-chrome --version | cut -d " " -f3)
+        echo "Chrome version: $CHROME_VERSION"
+        
+        # Get the ChromeDriver version that matches Chrome
+        CHROMEDRIVER_VERSION=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/LATEST_RELEASE_$CHROME_VERSION" || curl -s "https://googlechromelabs.github.io/chrome-for-testing/LATEST_RELEASE_STABLE")
+        echo "ChromeDriver version: $CHROMEDRIVER_VERSION"
+        
+        # Download and install ChromeDriver
+        wget -O /tmp/chromedriver.zip "https://storage.googleapis.com/chrome-for-testing-public/$CHROMEDRIVER_VERSION/linux64/chromedriver-linux64.zip"
+        sudo unzip /tmp/chromedriver.zip -d /tmp/
+        sudo mv /tmp/chromedriver-linux64/chromedriver /usr/local/bin/
         sudo chmod +x /usr/local/bin/chromedriver
+        
+        # Verify installation
+        chromedriver --version
     
     - name: Install Python dependencies
       run: |
