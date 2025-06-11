@@ -29,7 +29,7 @@ class LastFmExporter:
         """
         self.url = "https://mainstream.ghan.nl/export.html"
         # Get username from parameter, environment variable, or fallback
-        self.username = amaydixit11
+        self.username = "amaydixit11"
         
         # Set default download directory to data/raw
         if download_dir is None:
