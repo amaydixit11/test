@@ -1,0 +1,54 @@
+# .github/workflows/lastfm-scraper.yml
+name: Last.fm Data Collection and Enrichment
+
+on:
+  schedule:
+    # Run every hour at minute 0
+    - cron: '0 * * * *'
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  collect-and-enrich:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Create necessary directories
+      run: |
+        mkdir -p data/raw
+        mkdir -p data/enriched
+        mkdir -p logs
+    
+    - name: Run data collection
+      env:
+        LASTFM_USERNAME: ${{ secrets.LASTFM_USERNAME }}
+      run: |
+        python scripts/collect_data.py
+    
+    - name: Run data enrichment
+      env:
+        LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
+      run: |
+        python scripts/enrich_data.py
+    
+    - name: Commit and push changes
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add data/ logs/ cache/
+        git diff --staged --quiet || git commit -m "Update Last.fm data - $(date)"
+        git push
