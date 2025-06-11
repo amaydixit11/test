@@ -18,7 +18,7 @@ jobs:
         fetch-depth: 0  # Fetch full history for better git operations
     
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.9'
     
@@ -147,7 +147,7 @@ jobs:
     
     - name: Upload artifacts (for debugging)
       if: failure()
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: debug-logs
         path: |
