@@ -73,7 +73,7 @@ jobs:
         LASTFM_USERNAME: ${{ secrets.LASTFM_USERNAME }}
       run: |
         echo "Starting Last.fm data collection..."
-        python lastfm_export.py --check-existing
+        python scripts/collect_data.py --download-dir data/raw --check-existing
         
         # Log the collection
         echo "$(date): Data collection completed" >> logs/collection.log
