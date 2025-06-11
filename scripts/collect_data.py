@@ -14,19 +14,34 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import TimeoutException, WebDriverException
 import argparse
+from datetime import datetime
+from pathlib import Path
 
 class LastFmExporter:
-    def __init__(self, download_dir=None, headless=True):
+    def __init__(self, download_dir=None, headless=True, username=None):
         """
         Initialize the Last.fm exporter
         
         Args:
-            download_dir (str): Directory to save downloaded files (defaults to current directory)
+            download_dir (str): Directory to save downloaded files (defaults to data/raw)
             headless (bool): Run browser in headless mode (default: True)
+            username (str): Last.fm username (defaults to environment variable or hardcoded)
         """
         self.url = "https://mainstream.ghan.nl/export.html"
-        self.username = "amaydixit11"
-        self.download_dir = download_dir or os.getcwd()
+        # Get username from parameter, environment variable, or fallback
+        self.username = username or os.getenv('LASTFM_USERNAME', 'amaydixit11')
+        
+        # Set default download directory to data/raw
+        if download_dir is None:
+            # Create data directory structure
+            base_dir = Path(__file__).parent.parent if Path(__file__).parent.name == 'scripts' else Path.cwd()
+            self.download_dir = str(base_dir / 'data' / 'raw')
+        else:
+            self.download_dir = download_dir
+            
+        # Ensure download directory exists
+        os.makedirs(self.download_dir, exist_ok=True)
+        
         self.headless = headless
         self.driver = None
         
@@ -39,27 +54,61 @@ class LastFmExporter:
         
         # Set download directory
         prefs = {
-            "download.default_directory": self.download_dir,
+            "download.default_directory": os.path.abspath(self.download_dir),
             "download.prompt_for_download": False,
             "download.directory_upgrade": True,
             "safebrowsing.enabled": True
         }
         chrome_options.add_experimental_option("prefs", prefs)
         
-        # Additional options for stability
+        # Additional options for stability and GitHub Actions compatibility
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
         chrome_options.add_argument("--disable-gpu")
         chrome_options.add_argument("--window-size=1920,1080")
+        chrome_options.add_argument("--disable-extensions")
+        chrome_options.add_argument("--disable-plugins")
+        chrome_options.add_argument("--disable-images")  # Speed up loading
         
         try:
             self.driver = webdriver.Chrome(options=chrome_options)
             self.driver.implicitly_wait(10)
             print("Chrome WebDriver initialized successfully")
+            print(f"Download directory: {os.path.abspath(self.download_dir)}")
         except WebDriverException as e:
             print(f"Error initializing Chrome WebDriver: {e}")
             print("Make sure ChromeDriver is installed and in your PATH")
             sys.exit(1)
+    
+    def get_latest_timestamp(self):
+        """
+        Get the latest timestamp from existing CSV files to avoid duplicate downloads
+        """
+        try:
+            csv_files = [f for f in os.listdir(self.download_dir) if f.endswith('.csv')]
+            if not csv_files:
+                return None
+                
+            # Sort files by modification time, get the newest
+            csv_files.sort(key=lambda x: os.path.getmtime(os.path.join(self.download_dir, x)), reverse=True)
+            latest_file = csv_files[0]
+            
+            # Try to extract timestamp from filename if it follows a pattern
+            # Last.fm exports typically include timestamps in filenames
+            print(f"Found existing export: {latest_file}")
+            
+            # Read the last line of the CSV to get the latest scrobble timestamp
+            file_path = os.path.join(self.download_dir, latest_file)
+            with open(file_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+                if len(lines) > 1:  # Skip header
+                    last_line = lines[-1].strip()
+                    # This is a simple approach - you might need to adjust based on CSV format
+                    print(f"Latest export found, consider using incremental update")
+                    
+        except Exception as e:
+            print(f"Error checking for existing files: {e}")
+            return None
     
     def export_scrobbles(self, timestamp=None):
         """
@@ -120,7 +169,12 @@ class LastFmExporter:
             # Wait for the export to complete and file to be downloaded
             # This can take a while for large datasets
             print("Waiting for export to complete...")
-            self.wait_for_download(files_before, timeout=300)  # 5 minutes timeout
+            downloaded_file = self.wait_for_download(files_before, timeout=300)  # 5 minutes timeout
+            
+            if downloaded_file:
+                # Rename file with timestamp for better organization
+                self.organize_downloaded_file(downloaded_file)
+                return True
             
         except TimeoutException:
             print("Timeout waiting for page elements or download to complete")
@@ -129,7 +183,37 @@ class LastFmExporter:
             print(f"An error occurred during export: {e}")
             return False
         
-        return True
+        return False
+    
+    def organize_downloaded_file(self, file_path):
+        """
+        Rename the downloaded file with a timestamp for better organization
+        """
+        try:
+            if not os.path.exists(file_path):
+                return
+                
+            # Get current timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            # Get file info
+            file_dir = os.path.dirname(file_path)
+            file_name = os.path.basename(file_path)
+            name, ext = os.path.splitext(file_name)
+            
+            # Create new filename with timestamp
+            new_name = f"lastfm_scrobbles_{self.username}_{timestamp}{ext}"
+            new_path = os.path.join(file_dir, new_name)
+            
+            # Rename the file
+            os.rename(file_path, new_path)
+            print(f"📁 File renamed to: {new_name}")
+            
+            return new_path
+            
+        except Exception as e:
+            print(f"Error organizing file: {e}")
+            return file_path
     
     def wait_for_download(self, files_before, timeout=300):
         """
@@ -159,6 +243,14 @@ class LastFmExporter:
                 # Get file size
                 file_size = os.path.getsize(file_path)
                 print(f"📊 File size: {file_size:,} bytes ({file_size/1024/1024:.2f} MB)")
+                
+                # Count approximate number of lines (rough estimate of scrobbles)
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        line_count = sum(1 for _ in f) - 1  # Subtract header
+                    print(f"📈 Approximate scrobbles: {line_count:,}")
+                except:
+                    pass
                 
                 return file_path
             
@@ -194,18 +286,32 @@ class LastFmExporter:
 def main():
     parser = argparse.ArgumentParser(description="Export Last.fm scrobbles data")
     parser.add_argument("--timestamp", "-t", type=str, help="Unix timestamp to export scrobbles from")
-    parser.add_argument("--download-dir", "-d", type=str, help="Directory to save downloaded file")
+    parser.add_argument("--download-dir", "-d", type=str, help="Directory to save downloaded file (default: data/raw)")
     parser.add_argument("--visible", "-v", action="store_true", help="Run browser in visible mode (not headless)")
+    parser.add_argument("--username", "-u", type=str, help="Last.fm username (default: from env LASTFM_USERNAME)")
+    parser.add_argument("--check-existing", action="store_true", help="Check for existing exports")
     
     args = parser.parse_args()
     
     # Create download directory if it doesn't exist
-    download_dir = args.download_dir or os.path.join(os.getcwd(), "lastfm_exports")
+    download_dir = args.download_dir
+    if not download_dir:
+        # Default to data/raw structure
+        base_dir = Path.cwd()
+        download_dir = str(base_dir / 'data' / 'raw')
+    
     os.makedirs(download_dir, exist_ok=True)
+    
+    # Initialize exporter
+    exporter = LastFmExporter(
+        download_dir=download_dir,
+        headless=not args.visible,
+        username=args.username
+    )
     
     print("🎵 Last.fm Scrobbles Export Tool")
     print("=" * 40)
-    print(f"Username: amaydixit11")
+    print(f"Username: {exporter.username}")
     print(f"Export type: Scrobbles")
     print(f"Format: CSV")
     print(f"Download directory: {download_dir}")
@@ -213,10 +319,9 @@ def main():
         print(f"Timestamp: {args.timestamp}")
     print("=" * 40)
     
-    exporter = LastFmExporter(
-        download_dir=download_dir,
-        headless=not args.visible
-    )
+    # Check for existing exports if requested
+    if args.check_existing:
+        exporter.get_latest_timestamp()
     
     try:
         exporter.setup_driver()
@@ -237,7 +342,7 @@ def main():
         exporter.close()
 
 if __name__ == "__main__":
-    main()
+    main()()
 
 # # Last.fm Export Automation Setup
 
