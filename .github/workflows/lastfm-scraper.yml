@@ -1,10 +1,9 @@
-# .github/workflows/lastfm-scraper.yml
 name: Last.fm Data Collection and Enrichment
 
 on:
   schedule:
-    # Run every hour at minute 0
-    - cron: '0 * * * *'
+    # Run every 6 hours to avoid hitting rate limits
+    - cron: '0 */6 * * *'
   workflow_dispatch:  # Allow manual triggering
 
 jobs:
@@ -16,39 +15,142 @@ jobs:
       uses: actions/checkout@v4
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
+        fetch-depth: 0  # Fetch full history for better git operations
     
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.9'
     
-    - name: Install dependencies
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget gnupg
+        
+        # Install Chrome
+        wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+        echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
+        sudo apt-get update
+        sudo apt-get install -y google-chrome-stable
+        
+        # Install ChromeDriver
+        CHROME_VERSION=$(google-chrome --version | cut -d " " -f3 | cut -d "." -f1)
+        CHROMEDRIVER_VERSION=$(curl -s "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${CHROME_VERSION}")
+        wget -O /tmp/chromedriver.zip "https://chromedriver.storage.googleapis.com/${CHROMEDRIVER_VERSION}/chromedriver_linux64.zip"
+        sudo unzip /tmp/chromedriver.zip -d /usr/local/bin/
+        sudo chmod +x /usr/local/bin/chromedriver
+    
+    - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        pip install selenium>=4.15.0
+        # Add any other dependencies your enrichment script needs
+        # pip install -r requirements.txt  # if you have a requirements.txt file
     
     - name: Create necessary directories
       run: |
         mkdir -p data/raw
+        mkdir -p data/processed
         mkdir -p data/enriched
         mkdir -p logs
+        mkdir -p cache
     
-    - name: Run data collection
+    - name: Check existing data
+      id: check_data
+      run: |
+        # Check if we have recent data (less than 6 hours old)
+        if find data/raw -name "*.csv" -mmin -360 | grep -q .; then
+          echo "recent_data=true" >> $GITHUB_OUTPUT
+          echo "Found recent data, skipping collection"
+        else
+          echo "recent_data=false" >> $GITHUB_OUTPUT
+          echo "No recent data found, will collect new data"
+        fi
+    
+    - name: Run Last.fm data collection
+      if: steps.check_data.outputs.recent_data == 'false'
       env:
         LASTFM_USERNAME: ${{ secrets.LASTFM_USERNAME }}
       run: |
-        python scripts/collect_data.py
+        echo "Starting Last.fm data collection..."
+        python lastfm_export.py --check-existing
+        
+        # Log the collection
+        echo "$(date): Data collection completed" >> logs/collection.log
     
-    - name: Run data enrichment
+    - name: Run data enrichment (if enrichment script exists)
       env:
         LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
       run: |
-        python scripts/enrich_data.py
+        # Only run if enrichment script exists
+        if [ -f "scripts/enrich_data.py" ]; then
+          echo "Running data enrichment..."
+          python scripts/enrich_data.py
+          echo "$(date): Data enrichment completed" >> logs/enrichment.log
+        else
+          echo "No enrichment script found, skipping enrichment"
+        fi
+    
+    - name: Generate data summary
+      run: |
+        echo "# Last.fm Data Summary" > data/README.md
+        echo "Last updated: $(date)" >> data/README.md
+        echo "" >> data/README.md
+        echo "## Raw Data Files" >> data/README.md
+        ls -la data/raw/ >> data/README.md || echo "No raw data files found" >> data/README.md
+        echo "" >> data/README.md
+        echo "## File Sizes" >> data/README.md
+        du -h data/ >> data/README.md || echo "No data directory found" >> data/README.md
+        
+        # Count total scrobbles if CSV files exist
+        if ls data/raw/*.csv 1> /dev/null 2>&1; then
+          echo "" >> data/README.md
+          echo "## Scrobble Count" >> data/README.md
+          for file in data/raw/*.csv; do
+            count=$(tail -n +2 "$file" | wc -l)
+            echo "- $(basename "$file"): $count scrobbles" >> data/README.md
+          done
+        fi
     
     - name: Commit and push changes
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
-        git add data/ logs/ cache/
-        git diff --staged --quiet || git commit -m "Update Last.fm data - $(date)"
-        git push
+        
+        # Add all data files
+        git add data/ logs/ cache/ || true
+        
+        # Check if there are changes to commit
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          # Create commit message with timestamp and file info
+          commit_msg="Update Last.fm data - $(date '+%Y-%m-%d %H:%M:%S UTC')"
+          
+          # Add file count to commit message if CSV files exist
+          if ls data/raw/*.csv 1> /dev/null 2>&1; then
+            file_count=$(ls data/raw/*.csv | wc -l)
+            commit_msg="$commit_msg ($file_count CSV files)"
+          fi
+          
+          git commit -m "$commit_msg"
+          git push
+          echo "Changes committed and pushed successfully"
+        fi
+    
+    - name: Cleanup old files (optional)
+      run: |
+        # Keep only the 10 most recent CSV files to prevent repo from growing too large
+        cd data/raw
+        ls -t *.csv 2>/dev/null | tail -n +11 | xargs rm -f || true
+        echo "Cleanup completed"
+    
+    - name: Upload artifacts (for debugging)
+      if: failure()
+      uses: actions/upload-artifact@v3
+      with:
+        name: debug-logs
+        path: |
+          logs/
+          data/
+        retention-days: 7
